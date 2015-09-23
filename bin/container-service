@@ -1,0 +1,665 @@
+#!/bin/bash
+
+PROGNAME=${0##*/}
+AZUREUSER=azureuser
+
+usage()
+{
+  cat << EO 
+Usage: $PROGNAME [options] 
+
+Manage the Azure Mesos cluster.
+
+Options: 
+
+Cluster Management
+  --cache-fingerprints        cache the fingerprints on all nodes in cluster
+  --list-agents               list the agents
+  --list-masters              list the masters
+
+Agent Management
+  --start-agents              start all agents
+  --stop-agents               stop all agents
+  --restart-agents            restart all agents
+  --start-agent AGENT         start agent, where AGENT is the agent number as
+                              an integer
+  --stop-agent AGENT          stop agent, where AGENT is the agent number as
+                              an integer
+  --restart-agent AGENT       restart agent, where AGENT is the agent number
+                              as an integer
+  --exclude-agent AGENT       exclude agent from processing, where AGENT is the
+                              agent number as an integer
+  --agents-docker-pull IMAGE  pre-pull the docker image
+  --scale-up AGENTCOUNT       scale up to the agent count
+  --scale-down AGENTCOUNT     scale down to the agent count
+
+Marathon Management
+  --create-marathon-app FILE  submit the marathon app where FILE is the .json 
+                              file describing the app
+
+Other
+  --help                      show this output
+EO
+}
+
+if [ $# -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+ARGS=$(getopt -s bash -o h --longoptions help,cache-fingerprints,list-agents,list-masters,start-agents,stop-agents,restart-agents,start-agent:,stop-agent:,restart-agent:,exclude-agent:,agents-docker-pull:,scale-up:,scale-down:,create-marathon-app: --name $PROGNAME -- "$@")
+
+if [ $? -ne 0 ] ; then
+  usage
+  exit 1
+fi
+
+eval set -- "$ARGS"
+
+CACHEFINGERPRINTS=false
+LISTAGENTS=false
+LISTMASTERS=false
+STARTAGENTS=false
+STOPAGENTS=false
+RESTARTAGENTS=false
+STARTAGENT=false
+STARTAGENTARGS=()
+STOPAGENT=false
+STOPAGENTARGS=()
+RESTARTAGENT=false
+RESTARTAGENTARGS=()
+EXCLUDEAGENT=false
+EXCLUDEAGENTARGS=()
+AGENTSDOCKERPULL=false
+AGENTSDOCKERPULLARGS=()
+SCALEUP=false
+SCALEUPCOUNT=0
+SCALEDOWN=false
+SCALEDOWNCOUNT=0
+CREATEMARATHONAPP=false
+CREATEMARATHONAPPARGS=()
+
+while true; do
+  case $1 in 
+    -h|--help)
+          usage
+          exit 0
+          ;;
+   
+    --cache-fingerprints)
+	  shift
+	  CACHEFINGERPRINTS=true
+	  ;;
+	  
+    --list-agents)
+	  shift
+	  LISTAGENTS=true
+	  ;;
+	  
+    --list-masters)
+	  shift
+	  LISTMASTERS=true
+	  ;;
+	  
+    --start-agents)
+	  shift
+	  STARTAGENTS=true
+	  ;;
+	  
+    --stop-agents)
+	  shift
+	  STOPAGENTS=true
+	  ;;
+	  
+    --restart-agents)
+	  shift
+	  RESTARTAGENTS=true
+	  ;;
+	  
+    --start-agent)
+	  STARTAGENT=true
+          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+            echo "ERROR: agent must be an integer"
+            usage
+            exit 1
+          fi
+	  STARTAGENTARGS=("${STARTAGENTARGS[@]}" "$2")
+	  shift 2
+	  ;;
+
+    --stop-agent)
+	  STOPAGENT=true
+          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+            echo "ERROR: agent must be an integer"
+            usage
+            exit 1
+          fi
+	  STOPAGENTARGS=("${STOPAGENTARGS[@]}" "$2")
+	  shift 2
+	  ;;
+	  
+    --restart-agent)
+	  RESTARTAGENT=true
+          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+            echo "ERROR: agent must be an integer"
+            usage
+            exit 1
+          fi
+	  RESTARTAGENTARGS=("${RESTARTAGENTARGS[@]}" "$2")
+	  shift 2
+	  ;;
+
+    --exclude-agent)
+	  EXCLUDEAGENT=true
+          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+            echo "ERROR: agent must be an integer"
+            usage
+            exit 1
+          fi
+	  EXCLUDEAGENTARGS=("${EXCLUDEAGENTARGS[@]}" "$2")
+	  shift 2
+	  ;;
+	  
+    --agents-docker-pull)
+	  AGENTSDOCKERPULL=true
+	  AGENTSDOCKERPULLARGS=("${AGENTSDOCKERPULLARGS[@]}" "$2")
+	  shift 2
+	  ;;
+
+    --scale-up)
+	  SCALEUP=true
+	  SCALEUPCOUNT=$2
+	  shift 2
+	  ;;
+	  
+    --scale-down)
+	  SCALEDOWN=true
+	  SCALEDOWNCOUNT=$2
+	  shift 2
+	  ;;
+	  
+    --create-marathon-app)
+	  CREATEMARATHONAPP=true
+	  CREATEMARATHONAPPARGS=("${CREATEMARATHONAPPARGS[@]}" "$2")
+	  shift 2
+	  ;;
+
+	--)
+	  shift
+	  break
+	  ;;
+	  
+	*)
+	  echo "ERROR: invalid argument or missing parameter for $1"
+	  usage
+	  exit 1
+  esac
+done  
+
+getnodes() {
+  if [ -e .nodes ] ; then 
+    cat .nodes
+  else
+    local -a arr=()
+    RESULTS="$(nmap -sn 10.0.0.0/25 | grep report | awk '{print $5}')"
+    while read -r line ; do
+      arr=("${arr[@]}" "$line")
+    done <<< "$RESULTS"
+    declare -p arr | sed -e 's/^declare -a arr=//' | tee .nodes
+  fi
+}
+
+getagents() {
+  if [ -e .agents ] ; then
+    cat .agents
+  else
+    local -a nodes=( "$@" )
+    local -a arr=()
+    for node in "${nodes[@]}"; do
+      if ssh ${AZUREUSER}@$node test -e /etc/mesos-slave/hostname < /dev/null ; then
+        arr=("${arr[@]}" "$node")
+      fi
+    done
+    declare -p arr | sed -e 's/^declare -a arr=//' | tee .agents
+  fi
+}
+
+getmasters() {
+  if [ -e .masters ] ; then
+    cat .masters
+  else
+    local -a nodes=( "$@" )
+    local -a arr=()
+    for node in "${nodes[@]}"; do
+      if ssh ${AZUREUSER}@$node test -e /etc/mesos-master/hostname < /dev/null ; then
+        arr=("${arr[@]}" "$node")
+      fi
+    done
+    declare -p arr | sed -e 's/^declare -a arr=//' | tee .masters
+  fi
+}
+
+cache-fingerprints() {
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  for node in "${nodes[@]}"; do
+    echo adding $node fingerprint to ~/.ssh/known_hosts
+    `ssh-keyscan -H $node >> ~/.ssh/known_hosts`
+  done
+}	  
+if [ "$CACHEFINGERPRINTS" = true ] ; then
+  cache-fingerprints
+  exit 0
+fi
+
+agent-running() {
+  declare agentString=("$1")
+  if ssh ${AZUREUSER}@$agentString "ps ax | grep mesos-slave | grep -v grep" < /dev/null ; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+master-running() {
+  declare agentString=("$1")
+  if ssh ${AZUREUSER}@$agentString "ps ax | grep mesos-master | grep -v grep" < /dev/null ; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+list-agents()
+{
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering agents . . .
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+  echo found ${#agents[@]} agents
+
+  local counter=1
+  for agent in "${agents[@]}"; do
+    if [ "$(agent-running $agent)" ] ; then
+      echo agent $counter $agent started
+    else
+      echo agent $counter $agent stopped
+    fi
+    counter=$[$counter +1]
+  done
+}
+if [ "$LISTAGENTS" = true ] ; then
+  list-agents
+  exit 0
+fi
+
+list-masters()
+{
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering masters . . .
+  local mastersstring="$(getmasters "${nodes[@]}")"
+  local -a masters=()
+  eval "declare -a masters=${mastersstring}"
+  echo found ${#masters[@]} masters
+
+  local counter=1
+  for master in "${masters[@]}"; do
+    if [ "$(master-running $master)" ] ; then
+      echo master $counter $master started
+    else
+      echo master $counter $master stopped
+    fi
+    counter=$[$counter +1]
+  done
+}
+if [ "$LISTMASTERS" = true ] ; then
+  list-masters
+  exit 0
+fi
+
+service-agents() {
+  declare -a excludeAgents=("${!1}")
+  declare action=("$2")
+  echo "$action agents called"
+  echo "excluding agents ${excludeAgents[@]}"
+
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering agents . . .
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+  echo found ${#agents[@]} agents
+
+  # setup the exclude array
+  local -a excludeArray=()
+  # add a dummy entry to take up agent 0
+  excludeArray=("${excludeArray[@]}" false)
+  for i in $(seq 1 ${#agents[@]}); do
+    excludeArray=("${excludeArray[@]}" false)
+  done
+  for agent in "${excludeAgents[@]}"; do
+    if [ "$agent" -gt 0 ] && [ "$agent" -le "${#agents[@]}" ] ; then
+      echo "excluding $agent"
+      excludeArray[$agent]=true
+    else
+      echo "ignoring invalid agent $agent"
+    fi
+  done
+
+  local hostString=""
+  local counter=1
+  for agent in "${agents[@]}"; do
+    if [ "${excludeArray[$counter]}" = false ] ; then
+      hostString="$hostString -H $AZUREUSER@$agent"
+    else
+      echo "excluding agent $counter" $agent
+    fi
+    counter=$[$counter +1]
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to $action"
+    return 0
+  fi
+
+  echo calling ${action} on agents in parallel
+
+  pssh -i $hostString "sudo service mesos-slave $action"
+}
+if [ "$STARTAGENTS" = true ] ; then
+  service-agents EXCLUDEAGENTARGS[@] "start"
+  exit 0
+fi
+
+if [ "$STOPAGENTS" = true ] ; then
+  service-agents EXCLUDEAGENTARGS[@] "stop"
+  exit 0
+fi
+
+if [ "$RESTARTAGENTS" = true ] ; then
+  service-agents EXCLUDEAGENTARGS[@] "restart"
+  exit 0
+fi
+
+service-agent()
+{
+  declare -a stopAgents=("${!1}")
+  declare action=("$2")
+  echo "$action agent on agents ${stopAgents[@]}"
+
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering agents . . .
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+  echo found ${#agents[@]} agents
+
+  # setup the exclude array
+  local -a excludeArray=()
+  # add a dummy entry to take up agent 0
+  excludeArray=("${excludeArray[@]}" true)
+  for i in $(seq 1 ${#agents[@]}); do
+    excludeArray=("${excludeArray[@]}" true)
+  done
+  for agent in "${stopAgents[@]}"; do
+    if [ "$agent" -gt 0 ] && [ "$agent" -le "${#agents[@]}" ] ; then
+      excludeArray[$agent]=false
+    else
+      echo "ignoring invalid agent $agent"
+    fi
+  done
+
+  local hostString=""
+  local counter=1
+  for agent in "${agents[@]}"; do
+    if [ "${excludeArray[$counter]}" = false ] ; then
+      hostString="$hostString -H $AZUREUSER@$agent"
+      echo "including agent $counter $agent"
+    fi
+    counter=$[$counter +1]
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to $action"
+    return 0
+  fi
+
+  echo calling ${action} on agents in parallel
+
+  pssh -i $hostString "sudo service mesos-slave $action"
+}
+if [ "$STOPAGENT" = true ] ; then
+  service-agent STOPAGENTARGS[@] "stop"
+  exit 0
+fi
+if [ "$STARTAGENT" = true ] ; then
+  service-agent STARTAGENTARGS[@] "start"
+  exit 0
+fi
+if [ "$RESTARTAGENT" = true ] ; then
+  service-agent RESTARTAGENTARGS[@] "restart"
+  exit 0
+fi
+
+agents-docker-pull()
+{
+  declare -a dockerImageArgs=("${!1}")
+  echo "pull docker images ${dockerImageArgs[@]}"
+
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering agents . . .
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+  echo found ${#agents[@]} agents
+
+  local hostString=""
+  for agent in "${agents[@]}"; do
+    hostString="$hostString -H $AZUREUSER@$agent"
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to $action"
+    return 0
+  fi
+
+  for dockerImage in "${dockerImageArgs[@]}"; do
+    echo pull docker image $dockerImage on agents in parallel
+    pssh -t 0 -i $hostString "sudo docker pull $dockerImage"
+  done
+}
+if [ "$AGENTSDOCKERPULL" = true ] ; then
+  agents-docker-pull AGENTSDOCKERPULLARGS[@]
+  exit 0
+fi
+
+scale-up()
+{
+  declare scaleUpCount=("$1")
+  echo "scale up to $scaleUpCount"
+  declare -a excludeAgents=("${!2}")
+  echo "excluding agents ${excludeAgents[@]}"
+
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering agents . . .
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+  echo found ${#agents[@]} agents
+
+  # setup the exclude array
+  local -a excludeArray=()
+  # add a dummy entry to take up agent 0
+  excludeArray=("${excludeArray[@]}" false)
+  for i in $(seq 1 ${#agents[@]}); do
+    excludeArray=("${excludeArray[@]}" false)
+  done
+  # exclude the explicitly excluded agents
+  for agent in "${excludeAgents[@]}"; do
+    if [ "$agent" -gt 0 ] && [ "$agent" -le "${#agents[@]}" ] ; then
+      echo "excluding $agent"
+      excludeArray[$agent]=true
+    else
+      echo "ignoring invalid agent $agent"
+    fi
+  done
+  local hostString=""
+  local counter=0
+  for agent in "${agents[@]}"; do
+    counter=$[$counter +1]
+    if [ "${excludeArray[$counter]}" = false ] && ! [ "$(agent-running $agent)" ] ; then
+      hostString="$hostString -H $AZUREUSER@$agent"
+    else
+      echo "excluding agent $counter" $agent, since already running or explictly excluded
+    fi
+    if [ "$counter" -eq "$scaleUpCount" ] ; then
+      echo "breaking out" $counter $scaleUpCount
+      break;
+    fi
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to start"
+    return 0
+  fi
+
+  echo now starting agents to scale to $counter
+  pssh -i $hostString "sudo service mesos-slave start"
+  echo completed scaling to $counter agents
+}
+if [ "$SCALEUP" = true ] ; then
+  scale-up $SCALEUPCOUNT EXCLUDEAGENTARGS[@] 
+  exit 0
+fi
+
+scale-down()
+{
+  declare scaleDownCount=("$1")
+  echo "scale down to $scaleDownCount"
+  declare -a excludeAgents=("${!2}")
+  echo "excluding agents ${excludeAgents[@]}"
+
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering agents . . .
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+  echo found ${#agents[@]} agents
+
+  # setup the exclude array
+  local -a excludeArray=()
+  # add a dummy entry to take up agent 0
+  excludeArray=("${excludeArray[@]}" false)
+  for i in $(seq 1 ${#agents[@]}); do
+    excludeArray=("${excludeArray[@]}" false)
+  done
+  # exclude the explicitly excluded agents
+  for agent in "${excludeAgents[@]}"; do
+    if [ "$agent" -gt 0 ] && [ "$agent" -le "${#agents[@]}" ] ; then
+      echo "excluding $agent"
+      excludeArray[$agent]=true
+    else
+      echo "ignoring invalid agent $agent"
+    fi
+  done
+  local hostString=""
+  local counter=0
+  for agent in "${agents[@]}"; do
+    counter=$[$counter +1]
+    if [ "$counter" -le "$scaleDownCount" ] ; then
+      continue
+    fi
+    if [ "${excludeArray[$counter]}" = false ] && [ "$(agent-running $agent)" ] ; then
+      hostString="$hostString -H $AZUREUSER@$agent"
+    else
+      echo "excluding agent $counter" $agent, since already stopped or explictly excluded
+    fi
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to stop"
+    return 0
+  fi
+
+  echo now stopping agents to scale down to $scaleDownCount
+  pssh -i $hostString "sudo service mesos-slave stop"
+  echo completed scaling to $scaleDownCount agents
+}
+if [ "$SCALEDOWN" = true ] ; then
+  scale-down $SCALEDOWNCOUNT EXCLUDEAGENTARGS[@] 
+  exit 0
+fi
+
+create-marathon-app()
+{
+  declare -a marathonfiles=("${!1}")
+  echo "submitting the following marathon apps ${marathonfiles[@]}"
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering masters . . .
+  local mastersstring="$(getmasters "${nodes[@]}")"
+  local -a masters=()
+  eval "declare -a masters=${mastersstring}"
+  echo found ${#masters[@]} masters
+
+  if [ "${#masters[@]}" -eq "0" ] ; then
+    echo there are no masters, exiting . . .
+    return 1
+  fi
+
+  local marathonMaster="http://${masters[0]}:8080"
+  echo submiting to $marathonMaster
+
+  for jsonFile in "${marathonfiles[@]}"; do
+    if [ -e $jsonFile ] ; then
+      echo curl -X POST $marathonMaster/v2/groups -d @$jsonFile -H "Content-type: application/json"
+      curl -X POST $marathonMaster/v2/groups -d @$jsonFile -H "Content-type: application/json"
+    else
+      echo ERROR: file $jsonFile does not exist, unable to submit
+    fi
+  done
+}
+if [ "$CREATEMARATHONAPP" = true ] ; then
+  create-marathon-app CREATEMARATHONAPPARGS[@]
+  exit 0
+fi
+
