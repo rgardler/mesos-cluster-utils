@@ -517,7 +517,6 @@ service-agent()
     fi
   done
 
-  local hostString=""
   local counter=1
   for agent in "${agents[@]}"; do
     if [ "${excludeArray[$counter]}" = false ] ; then
@@ -526,20 +525,19 @@ service-agent()
       elif [ "$action" = "stop" ] && ! [ "$(agent-running $agent)" ] ; then
         echo agent $agent is already stopped
       else
-        hostString="$hostString -H $AZUREUSER@$agent"
-        echo "including agent $counter $agent"
+        if [ "$action" = "stop" ] ; then
+          agentPid=$(ssh ${AZUREUSER}@${agent} sudo ps ax | grep slave | grep sbin | awk '{ print $1 }')
+          if [ "$agentPid" ] ; then
+            # send SIGUSR1 before stoping the service
+            echo ssh ${AZUREUSER}@${agent} sudo kill -SIGUSR1 $agentPid
+            ssh ${AZUREUSER}@${agent} sudo kill -SIGUSR1 $agentPid
+          fi
+        fi
+        ssh ${AZUREUSER}@${agent} sudo service mesos-slave $action < /dev/null
       fi
     fi
     counter=$[$counter +1]
   done
-  if [ "$hostString" = "" ] ; then
-    echo "there are no agents to $action"
-    return 0
-  fi
-
-  echo calling ${action} on agents in parallel
-
-  pssh -i $hostString "sudo service mesos-slave $action"
 }
 if [ "$STOPAGENT" = true ] ; then
   service-agent STOPAGENTARGS[@] "stop"
