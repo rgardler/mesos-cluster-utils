@@ -5,37 +5,44 @@ AZUREUSER=azureuser
 
 usage()
 {
-  cat << EO 
-Usage: $PROGNAME [options] 
+  cat << EO
+Usage: $PROGNAME [options]
 
 Manage the Azure Mesos cluster.
 
-Options: 
+Options:
 
 Cluster Management
-  --cache-fingerprints        cache the fingerprints on all nodes in cluster
-  --list-agents               list the agents
-  --list-masters              list the masters
+  --cache-fingerprints         cache the fingerprints on all nodes in cluster
+  --list-agents                list the agents
+  --list-masters               list the masters
+  --refresh-cluster            re-interrogate the cluster for new machines
 
 Agent Management
-  --start-agents              start all agents
-  --stop-agents               stop all agents
-  --restart-agents            restart all agents
-  --start-agent AGENT         start agent, where AGENT is the agent number as
-                              an integer
-  --stop-agent AGENT          stop agent, where AGENT is the agent number as
-                              an integer
-  --restart-agent AGENT       restart agent, where AGENT is the agent number
-                              as an integer
-  --exclude-agent AGENT       exclude agent from processing, where AGENT is the
-                              agent number as an integer
-  --agents-docker-ps          run docker ps on the agents
-  --agents-docker-pull IMAGE  pre-pull the docker image
-  --scale-up AGENTCOUNT       scale up to the agent count
-  --scale-down AGENTCOUNT     scale down to the agent count
+  --start-agents               start all agents
+  --stop-agents                stop all agents
+  --restart-agents             restart all agents
+  --start-agent AGENT          start agent, where AGENT is the agent number as
+                               an integer
+  --stop-agent AGENT           stop agent, where AGENT is the agent number as
+                               an integer
+  --restart-agent AGENT        restart agent, where AGENT is the agent number
+                               as an integer
+  --exclude-agent AGENT        exclude agent from processing, where AGENT is the
+                               agent number as an integer
+  --scale-up AGENTCOUNT        scale up to the agent count
+  --scale-down AGENTCOUNT      scale down to the agent count
+
+Docker Management
+  --docker-ps-agents           run docker ps on the agents
+  --docker-pull-agents IMAGE   pre-pull the docker image
+  --docker-pull-batchsize SIZE set a batch size for the concurrent pulls
+                               otherwise there will be throttling (default 5)
+  --docker-restart-agents      restart docker on all the agents
+  --docker-restart-agent AGENT restart docker on all the agents
 
 Marathon Management
-  --create-marathon-app FILE  submit the marathon app where FILE is the .json 
+  --create-marathon-app FILE  submit the marathon app where FILE is the .json
                               file describing the app
 
 Other
@@ -48,7 +55,7 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-ARGS=$(getopt -s bash -o h --longoptions help,cache-fingerprints,list-agents,list-masters,start-agents,stop-agents,restart-agents,start-agent:,stop-agent:,restart-agent:,exclude-agent:,agents-docker-ps,agents-docker-pull:,scale-up:,scale-down:,create-marathon-app: --name $PROGNAME -- "$@")
+ARGS=$(getopt -s bash -o h --longoptions help,cache-fingerprints,list-agents,list-masters,refresh-cluster,start-agents,stop-agents,restart-agents,start-agent:,stop-agent:,restart-agent:,exclude-agent:,scale-up:,scale-down:,docker-ps-agents,docker-pull-agents:,docker-pull-batchsize:,docker-restart-agents,docker-restart-agent:,create-marathon-app: --name $PROGNAME -- "$@")
 
 if [ $? -ne 0 ] ; then
   usage
@@ -60,6 +67,7 @@ eval set -- "$ARGS"
 CACHEFINGERPRINTS=false
 LISTAGENTS=false
 LISTMASTERS=false
+REFRESHCLUSTER=false
 STARTAGENTS=false
 STOPAGENTS=false
 RESTARTAGENTS=false
@@ -71,148 +79,188 @@ RESTARTAGENT=false
 RESTARTAGENTARGS=()
 EXCLUDEAGENT=false
 EXCLUDEAGENTARGS=()
-AGENTSDOCKERPS=false
-AGENTSDOCKERPULL=false
-AGENTSDOCKERPULLARGS=()
 SCALEUP=false
 SCALEUPCOUNT=0
 SCALEDOWN=false
 SCALEDOWNCOUNT=0
+DOCKERPSAGENTS=false
+DOCKERPULLAGENTS=false
+DOCKERPULLAGENTSARGS=()
+DOCKERPULLBATCHSIZE=5
+DOCKERRESTARTAGENTS=false
+DOCKERRESTARTAGENT=false
+DOCKERRESTARTAGENTARGS=()
 CREATEMARATHONAPP=false
 CREATEMARATHONAPPARGS=()
 
 while true; do
-  case $1 in 
+  case $1 in
     -h|--help)
-          usage
-          exit 0
-          ;;
-   
+      usage
+      exit 0
+      ;;
+
     --cache-fingerprints)
-	  shift
-	  CACHEFINGERPRINTS=true
-	  ;;
-	  
+  	  shift
+  	  CACHEFINGERPRINTS=true
+  	  ;;
+
     --list-agents)
-	  shift
-	  LISTAGENTS=true
-	  ;;
-	  
+  	  shift
+  	  LISTAGENTS=true
+  	  ;;
+
     --list-masters)
-	  shift
-	  LISTMASTERS=true
-	  ;;
-	  
+  	  shift
+  	  LISTMASTERS=true
+  	  ;;
+
+    --refresh-cluster)
+  	  shift
+  	  REFRESHCLUSTER=true
+  	  ;;
+
     --start-agents)
-	  shift
-	  STARTAGENTS=true
-	  ;;
-	  
+  	  shift
+  	  STARTAGENTS=true
+  	  ;;
+
     --stop-agents)
-	  shift
-	  STOPAGENTS=true
-	  ;;
-	  
+  	  shift
+  	  STOPAGENTS=true
+  	  ;;
+
     --restart-agents)
-	  shift
-	  RESTARTAGENTS=true
-	  ;;
-	  
+  	  shift
+  	  RESTARTAGENTS=true
+  	  ;;
+
     --start-agent)
-	  STARTAGENT=true
-          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
-            echo "ERROR: agent must be an integer"
-            usage
-            exit 1
-          fi
-	  STARTAGENTARGS=("${STARTAGENTARGS[@]}" "$2")
-	  shift 2
-	  ;;
+  	  STARTAGENT=true
+      if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+        echo "ERROR: agent must be an integer"
+        usage
+        exit 1
+      fi
+  	  STARTAGENTARGS=("${STARTAGENTARGS[@]}" "$2")
+  	  shift 2
+  	  ;;
 
     --stop-agent)
-	  STOPAGENT=true
-          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
-            echo "ERROR: agent must be an integer"
-            usage
-            exit 1
-          fi
-	  STOPAGENTARGS=("${STOPAGENTARGS[@]}" "$2")
-	  shift 2
-	  ;;
-	  
+  	  STOPAGENT=true
+      if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+        echo "ERROR: agent must be an integer"
+        usage
+        exit 1
+      fi
+  	  STOPAGENTARGS=("${STOPAGENTARGS[@]}" "$2")
+  	  shift 2
+  	  ;;
+
     --restart-agent)
-	  RESTARTAGENT=true
-          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
-            echo "ERROR: agent must be an integer"
-            usage
-            exit 1
-          fi
-	  RESTARTAGENTARGS=("${RESTARTAGENTARGS[@]}" "$2")
-	  shift 2
-	  ;;
+	    RESTARTAGENT=true
+      if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+        echo "ERROR: agent must be an integer"
+        usage
+        exit 1
+      fi
+  	  RESTARTAGENTARGS=("${RESTARTAGENTARGS[@]}" "$2")
+  	  shift 2
+	    ;;
 
     --exclude-agent)
-	  EXCLUDEAGENT=true
-          if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
-            echo "ERROR: agent must be an integer"
-            usage
-            exit 1
-          fi
-	  EXCLUDEAGENTARGS=("${EXCLUDEAGENTARGS[@]}" "$2")
-	  shift 2
-	  ;;
-	  
-    --agents-docker-ps)
-          shift
-	  AGENTSDOCKERPS=true
-	  ;;
-
-    --agents-docker-pull)
-	  AGENTSDOCKERPULL=true
-	  AGENTSDOCKERPULLARGS=("${AGENTSDOCKERPULLARGS[@]}" "$2")
-	  shift 2
-	  ;;
+      EXCLUDEAGENT=true
+      if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+        echo "ERROR: agent must be an integer"
+        usage
+        exit 1
+      fi
+  	  EXCLUDEAGENTARGS=("${EXCLUDEAGENTARGS[@]}" "$2")
+  	  shift 2
+  	  ;;
 
     --scale-up)
-	  SCALEUP=true
-	  SCALEUPCOUNT=$2
-	  shift 2
-	  ;;
-	  
-    --scale-down)
-	  SCALEDOWN=true
-	  SCALEDOWNCOUNT=$2
-	  shift 2
-	  ;;
-	  
-    --create-marathon-app)
-	  CREATEMARATHONAPP=true
-	  CREATEMARATHONAPPARGS=("${CREATEMARATHONAPPARGS[@]}" "$2")
-	  shift 2
-	  ;;
+      SCALEUP=true
+      SCALEUPCOUNT=$2
+      shift 2
+      ;;
 
-	--)
-	  shift
-	  break
-	  ;;
-	  
-	*)
-	  echo "ERROR: invalid argument or missing parameter for $1"
-	  usage
-	  exit 1
+    --scale-down)
+      SCALEDOWN=true
+      SCALEDOWNCOUNT=$2
+      shift 2
+      ;;
+
+    --docker-ps-agents)
+      shift
+  	  DOCKERPSAGENTS=true
+  	  ;;
+
+    --docker-pull-agents)
+  	  DOCKERPULLAGENTS=true
+  	  DOCKERPULLAGENTSARGS=("${DOCKERPULLAGENTSARGS[@]}" "$2")
+  	  shift 2
+  	  ;;
+
+    --docker-pull-batchsize)
+      if ! [ "$2" -eq "$2" ] 2>/dev/null || [ "$2" -le "0" ] ; then
+        echo "ERROR: batch size must be an integer greater than 0"
+        usage
+        exit 1
+      fi
+      DOCKERPULLBATCHSIZE="$2"
+      shift 2
+      ;;
+
+    --docker-restart-agents)
+      shift
+      DOCKERRESTARTAGENTS=true
+      ;;
+
+    --docker-restart-agent)
+	    DOCKERRESTARTAGENT=true
+      if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
+        echo "ERROR: agent must be an integer"
+        usage
+        exit 1
+      fi
+  	  DOCKERRESTARTAGENTARGS=("${DOCKERRESTARTAGENTARGS[@]}" "$2")
+  	  shift 2
+	    ;;
+
+    --create-marathon-app)
+  	  CREATEMARATHONAPP=true
+  	  CREATEMARATHONAPPARGS=("${CREATEMARATHONAPPARGS[@]}" "$2")
+  	  shift 2
+  	  ;;
+
+  	--)
+  	  shift
+  	  break
+  	  ;;
+
+  	*)
+  	  echo "ERROR: invalid argument or missing parameter for $1"
+  	  usage
+  	  exit 1
   esac
-done  
+done
 
 getnodes() {
-  if [ -e .nodes ] ; then 
+  if [ -e .nodes ] ; then
     cat .nodes
   else
+    >&2 echo "retrieving list of nodes . . ."
     local -a arr=()
     RESULTS="$(nmap -sn 10.0.0.0/25 | grep report | awk '{print $5}')"
     while read -r line ; do
       arr=("${arr[@]}" "$line")
     done <<< "$RESULTS"
-    declare -p arr | sed -e 's/^declare -a arr=//' | tee .nodes
+    local nodesString=$(declare -p arr | sed -e 's/^declare -a arr=//' | tee .nodes)
+    local -a nodes=()
+    eval "declare -a nodes=${nodesString}"
+    >&2 echo found ${#nodes[@]} nodes
+    echo $nodesString
   fi
 }
 
@@ -220,6 +268,7 @@ getagents() {
   if [ -e .agents ] ; then
     cat .agents
   else
+    >&2 echo discovering agents . . .
     local -a nodes=( "$@" )
     local -a arr=()
     for node in "${nodes[@]}"; do
@@ -227,7 +276,11 @@ getagents() {
         arr=("${arr[@]}" "$node")
       fi
     done
-    declare -p arr | sed -e 's/^declare -a arr=//' | tee .agents
+    local agentsString=$(declare -p arr | sed -e 's/^declare -a arr=//' | tee .agents)
+    local -a agents=()
+    eval "declare -a agents=${agentsString}"
+    >&2 echo found ${#agents[@]} agents
+    echo $agentsString
   fi
 }
 
@@ -235,6 +288,7 @@ getmasters() {
   if [ -e .masters ] ; then
     cat .masters
   else
+    >&2 echo discovering masters . . .
     local -a nodes=( "$@" )
     local -a arr=()
     for node in "${nodes[@]}"; do
@@ -242,22 +296,24 @@ getmasters() {
         arr=("${arr[@]}" "$node")
       fi
     done
-    declare -p arr | sed -e 's/^declare -a arr=//' | tee .masters
+    local mastersString=$(declare -p arr | sed -e 's/^declare -a arr=//' | tee .masters)
+    local -a masters=()
+    eval "declare -a masters=${mastersString}"
+    >&2 echo found ${#masters[@]} masters
+    echo $mastersString
   fi
 }
 
 cache-fingerprints() {
-  echo retrieving list of nodes . . .
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
   for node in "${nodes[@]}"; do
     echo adding $node fingerprint to ~/.ssh/known_hosts
     `ssh-keyscan -H $node >> ~/.ssh/known_hosts`
   done
-}	  
+}
 if [ "$CACHEFINGERPRINTS" = true ] ; then
   cache-fingerprints
   exit 0
@@ -293,17 +349,13 @@ master-leader() {
 
 list-agents()
 {
-  echo retrieving list of nodes . . .
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
-  echo discovering agents . . .
   local agentsString="$(getagents "${nodes[@]}")"
   local -a agents=()
   eval "declare -a agents=${agentsString}"
-  echo found ${#agents[@]} agents
 
   local counter=1
   for agent in "${agents[@]}"; do
@@ -322,17 +374,13 @@ fi
 
 list-masters()
 {
-  echo retrieving list of nodes . . .
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
-  echo discovering masters . . .
   local mastersstring="$(getmasters "${nodes[@]}")"
   local -a masters=()
   eval "declare -a masters=${mastersstring}"
-  echo found ${#masters[@]} masters
 
   local counter=1
   for master in "${masters[@]}"; do
@@ -354,23 +402,35 @@ if [ "$LISTMASTERS" = true ] ; then
   exit 0
 fi
 
+refresh-cluster() {
+  echo "refreshing cluster . . ."
+  rm -f .nodes .agents .masters
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+
+  local agentsString="$(getagents "${nodes[@]}")"
+  local mastersString="$(getmasters "${nodes[@]}")"
+  echo "refresh complete"
+}
+if [ "$REFRESHCLUSTER" = true ] ; then
+  refresh-cluster
+  exit 0
+fi
+
 service-agents() {
   declare -a excludeAgents=("${!1}")
   declare action=("$2")
   echo "$action agents called"
   echo "excluding agents ${excludeAgents[@]}"
 
-  echo retrieving list of nodes . . .
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
-  echo discovering agents . . .
   local agentsString="$(getagents "${nodes[@]}")"
   local -a agents=()
   eval "declare -a agents=${agentsString}"
-  echo found ${#agents[@]} agents
 
   # setup the exclude array
   local -a excludeArray=()
@@ -392,7 +452,13 @@ service-agents() {
   local counter=1
   for agent in "${agents[@]}"; do
     if [ "${excludeArray[$counter]}" = false ] ; then
-      hostString="$hostString -H $AZUREUSER@$agent"
+      if [ "$action" = "start" ] && [ "$(agent-running $agent)" ] ; then
+        echo agent $agent is already running
+      elif [ "$action" = "stop" ] && ! [ "$(agent-running $agent)" ] ; then
+        echo agent $agent is already stopped
+      else
+        hostString="$hostString -H $AZUREUSER@$agent"
+      fi
     else
       echo "excluding agent $counter" $agent
     fi
@@ -428,17 +494,13 @@ service-agent()
   declare action=("$2")
   echo "$action agent on agents ${stopAgents[@]}"
 
-  echo retrieving list of nodes . . .
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
-  echo discovering agents . . .
   local agentsString="$(getagents "${nodes[@]}")"
   local -a agents=()
   eval "declare -a agents=${agentsString}"
-  echo found ${#agents[@]} agents
 
   # setup the exclude array
   local -a excludeArray=()
@@ -459,8 +521,14 @@ service-agent()
   local counter=1
   for agent in "${agents[@]}"; do
     if [ "${excludeArray[$counter]}" = false ] ; then
-      hostString="$hostString -H $AZUREUSER@$agent"
-      echo "including agent $counter $agent"
+      if [ "$action" = "start" ] && [ "$(agent-running $agent)" ] ; then
+        echo agent $agent is already running
+      elif [ "$action" = "stop" ] && ! [ "$(agent-running $agent)" ] ; then
+        echo agent $agent is already stopped
+      else
+        hostString="$hostString -H $AZUREUSER@$agent"
+        echo "including agent $counter $agent"
+      fi
     fi
     counter=$[$counter +1]
   done
@@ -486,74 +554,6 @@ if [ "$RESTARTAGENT" = true ] ; then
   exit 0
 fi
 
-agents-docker-pull()
-{
-  declare -a dockerImageArgs=("${!1}")
-  echo "pull docker images ${dockerImageArgs[@]}"
-
-  echo retrieving list of nodes . . .
-  local nodesString="$(getnodes)"
-  local -a nodes=()
-  eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
-
-  echo discovering agents . . .
-  local agentsString="$(getagents "${nodes[@]}")"
-  local -a agents=()
-  eval "declare -a agents=${agentsString}"
-  echo found ${#agents[@]} agents
-
-  local hostString=""
-  for agent in "${agents[@]}"; do
-    hostString="$hostString -H $AZUREUSER@$agent"
-  done
-  if [ "$hostString" = "" ] ; then
-    echo "there are no agents to $action"
-    return 0
-  fi
-
-  for dockerImage in "${dockerImageArgs[@]}"; do
-    echo pull docker image $dockerImage on agents in parallel
-    pssh -t 0 -i $hostString "sudo docker pull $dockerImage"
-  done
-}
-if [ "$AGENTSDOCKERPULL" = true ] ; then
-  agents-docker-pull AGENTSDOCKERPULLARGS[@]
-  exit 0
-fi
-
-agents-docker-ps()
-{
-  echo "retrieve docker processes on all agents"
-
-  echo retrieving list of nodes . . .
-  local nodesString="$(getnodes)"
-  local -a nodes=()
-  eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
-
-  echo discovering agents . . .
-  local agentsString="$(getagents "${nodes[@]}")"
-  local -a agents=()
-  eval "declare -a agents=${agentsString}"
-  echo found ${#agents[@]} agents
-
-  local hostString=""
-  for agent in "${agents[@]}"; do
-    hostString="$hostString -H $AZUREUSER@$agent"
-  done
-  if [ "$hostString" = "" ] ; then
-    echo "there are no agents to $action"
-    return 0
-  fi
-
-  pssh -t 0 -i $hostString "sudo docker ps"
-}
-if [ "$AGENTSDOCKERPS" = true ] ; then
-  agents-docker-ps 
-  exit 0
-fi
-
 scale-up()
 {
   declare scaleUpCount=("$1")
@@ -561,17 +561,13 @@ scale-up()
   declare -a excludeAgents=("${!2}")
   echo "excluding agents ${excludeAgents[@]}"
 
-  echo retrieving list of nodes . . .
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
-  echo discovering agents . . .
   local agentsString="$(getagents "${nodes[@]}")"
   local -a agents=()
   eval "declare -a agents=${agentsString}"
-  echo found ${#agents[@]} agents
 
   # setup the exclude array
   local -a excludeArray=()
@@ -613,7 +609,7 @@ scale-up()
   echo completed scaling to $counter agents
 }
 if [ "$SCALEUP" = true ] ; then
-  scale-up $SCALEUPCOUNT EXCLUDEAGENTARGS[@] 
+  scale-up $SCALEUPCOUNT EXCLUDEAGENTARGS[@]
   exit 0
 fi
 
@@ -624,17 +620,13 @@ scale-down()
   declare -a excludeAgents=("${!2}")
   echo "excluding agents ${excludeAgents[@]}"
 
-  echo retrieving list of nodes . . .
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
-  echo discovering agents . . .
   local agentsString="$(getagents "${nodes[@]}")"
   local -a agents=()
   eval "declare -a agents=${agentsString}"
-  echo found ${#agents[@]} agents
 
   # setup the exclude array
   local -a excludeArray=()
@@ -675,7 +667,155 @@ scale-down()
   echo completed scaling to $scaleDownCount agents
 }
 if [ "$SCALEDOWN" = true ] ; then
-  scale-down $SCALEDOWNCOUNT EXCLUDEAGENTARGS[@] 
+  scale-down $SCALEDOWNCOUNT EXCLUDEAGENTARGS[@]
+  exit 0
+fi
+
+docker-pull-agents()
+{
+  declare -a dockerImageArgs=("${!1}")
+  declare batchSize=("$2")
+  echo "pull docker images ${dockerImageArgs[@]} with batchsize of $batchSize"
+
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+
+  local counter=0
+  local batchRun=false
+  local hostString=""
+  for dockerImage in "${dockerImageArgs[@]}"; do
+    echo pull docker image $dockerImage on agents with max concurrent pulls of $batchSize
+
+    counter=0
+    hostString=""
+    while [ "$counter" -lt "${#agents[@]}" ] ; do
+      hostString="$hostString -H $AZUREUSER@${agents[$counter]}"
+      counter=$[$counter +1]
+
+      if [ "$(($counter%$batchSize))" -eq "0" ] ; then
+        echo pssh -t 0 -i $hostString "sudo docker pull $dockerImage"
+        pssh -t 0 -i $hostString "sudo docker pull $dockerImage"
+        hostString=""
+      fi
+    done
+    if ! [ "$hostString" = "" ] ; then
+      echo pssh -t 0 -i $hostString "sudo docker pull $dockerImage"
+      pssh -t 0 -i $hostString "sudo docker pull $dockerImage"
+    fi
+  done
+}
+if [ "$DOCKERPULLAGENTS" = true ] ; then
+  docker-pull-agents DOCKERPULLAGENTSARGS[@] $DOCKERPULLBATCHSIZE
+  exit 0
+fi
+
+docker-ps-agents()
+{
+  echo "retrieve docker processes on all agents"
+
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+
+  local hostString=""
+  for agent in "${agents[@]}"; do
+    hostString="$hostString -H $AZUREUSER@$agent"
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to $action"
+    return 0
+  fi
+
+  pssh -t 0 -i $hostString "sudo docker ps"
+}
+if [ "$DOCKERPSAGENTS" = true ] ; then
+  docker-ps-agents
+  exit 0
+fi
+
+docker-restart-agents()
+{
+  echo "restart docker on all agents"
+
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+
+  local hostString=""
+  for agent in "${agents[@]}"; do
+    hostString="$hostString -H $AZUREUSER@$agent"
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to $action"
+    return 0
+  fi
+
+  pssh -t 0 -i $hostString "sudo service docker restart"
+}
+if [ "$DOCKERRESTARTAGENTS" = true ] ; then
+  docker-restart-agents
+  exit 0
+fi
+
+docker-restart-agent()
+{
+  declare -a restartAgents=("${!1}")
+  echo "restarting docker service on agents ${restartAgents[@]}"
+
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+
+  # setup the exclude array
+  local -a excludeArray=()
+  # add a dummy entry to take up agent 0
+  excludeArray=("${excludeArray[@]}" true)
+  for i in $(seq 1 ${#agents[@]}); do
+    excludeArray=("${excludeArray[@]}" true)
+  done
+  for agent in "${restartAgents[@]}"; do
+    if [ "$agent" -gt 0 ] && [ "$agent" -le "${#agents[@]}" ] ; then
+      excludeArray[$agent]=false
+    else
+      echo "ignoring invalid agent $agent"
+    fi
+  done
+
+  local hostString=""
+  local counter=1
+  for agent in "${agents[@]}"; do
+    if [ "${excludeArray[$counter]}" = false ] ; then
+      hostString="$hostString -H $AZUREUSER@$agent"
+      echo "including agent $counter $agent"
+    fi
+    counter=$[$counter +1]
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to docker restart"
+    return 0
+  fi
+  echo calling restart on agents in parallel
+  pssh -t 0 -i $hostString "sudo service docker restart"
+}
+if [ "$DOCKERRESTARTAGENT" = true ] ; then
+  docker-restart-agent DOCKERRESTARTAGENTARGS[@]
   exit 0
 fi
 
@@ -683,17 +823,14 @@ create-marathon-app()
 {
   declare -a marathonfiles=("${!1}")
   echo "submitting the following marathon apps ${marathonfiles[@]}"
-  echo retrieving list of nodes . . .
+
   local nodesString="$(getnodes)"
   local -a nodes=()
   eval "declare -a nodes=${nodesString}"
-  echo found ${#nodes[@]} nodes
 
-  echo discovering masters . . .
   local mastersstring="$(getmasters "${nodes[@]}")"
   local -a masters=()
   eval "declare -a masters=${mastersstring}"
-  echo found ${#masters[@]} masters
 
   if [ "${#masters[@]}" -eq "0" ] ; then
     echo there are no masters, exiting . . .
@@ -704,7 +841,7 @@ create-marathon-app()
   marathonEndpoint=""
   for master in "${masters[@]}"; do
     result=$(wget -O- http://${master}:5050/master/state-summary 2> /dev/null | jq -r '.frameworks[] | select(.name == "marathon").webui_url')
-    
+
     if [ "$result" ] ; then
       marathonEndpoint=$result
       break
@@ -730,4 +867,3 @@ if [ "$CREATEMARATHONAPP" = true ] ; then
   create-marathon-app CREATEMARATHONAPPARGS[@]
   exit 0
 fi
-

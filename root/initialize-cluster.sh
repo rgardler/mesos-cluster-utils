@@ -7,5 +7,5 @@ container-service --list-agents
 container-service --list-masters
 container-service --start-agents
 container-service --scale-down 10
-container-service --agents-docker-pull azuredemo/web:azurecon --agents-docker-pull azuredemo/rest:azurecon
-wget https://raw.githubusercontent.com/mesosphere/AzureDevTestDeploy/master/marathon.json 
+container-service --docker-pull-agents azuredemo/web:azurecon --docker-pull-agents azuredemo/rest:azurecon
+wget https://raw.githubusercontent.com/rgardler/AzureDevTestDeploy/azurecon/marathon.json
