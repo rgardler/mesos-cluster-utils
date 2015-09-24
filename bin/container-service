@@ -29,6 +29,7 @@ Agent Management
                               as an integer
   --exclude-agent AGENT       exclude agent from processing, where AGENT is the
                               agent number as an integer
+  --agents-docker-ps          run docker ps on the agents
   --agents-docker-pull IMAGE  pre-pull the docker image
   --scale-up AGENTCOUNT       scale up to the agent count
   --scale-down AGENTCOUNT     scale down to the agent count
@@ -47,7 +48,7 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-ARGS=$(getopt -s bash -o h --longoptions help,cache-fingerprints,list-agents,list-masters,start-agents,stop-agents,restart-agents,start-agent:,stop-agent:,restart-agent:,exclude-agent:,agents-docker-pull:,scale-up:,scale-down:,create-marathon-app: --name $PROGNAME -- "$@")
+ARGS=$(getopt -s bash -o h --longoptions help,cache-fingerprints,list-agents,list-masters,start-agents,stop-agents,restart-agents,start-agent:,stop-agent:,restart-agent:,exclude-agent:,agents-docker-ps,agents-docker-pull:,scale-up:,scale-down:,create-marathon-app: --name $PROGNAME -- "$@")
 
 if [ $? -ne 0 ] ; then
   usage
@@ -70,6 +71,7 @@ RESTARTAGENT=false
 RESTARTAGENTARGS=()
 EXCLUDEAGENT=false
 EXCLUDEAGENTARGS=()
+AGENTSDOCKERPS=false
 AGENTSDOCKERPULL=false
 AGENTSDOCKERPULLARGS=()
 SCALEUP=false
@@ -160,6 +162,11 @@ while true; do
 	  shift 2
 	  ;;
 	  
+    --agents-docker-ps)
+          shift
+	  AGENTSDOCKERPS=true
+	  ;;
+
     --agents-docker-pull)
 	  AGENTSDOCKERPULL=true
 	  AGENTSDOCKERPULLARGS=("${AGENTSDOCKERPULLARGS[@]}" "$2")
@@ -274,6 +281,16 @@ master-running() {
   fi
 }
 
+master-leader() {
+  declare agentString=("$1")
+  result=$(wget -O- http://${agentString}:5050/master/state-summary 2> /dev/null | jq -r .frameworks[0])
+  if [ "$result" = "null" ] ; then
+    echo
+  else
+    echo "leader"
+  fi
+}
+
 list-agents()
 {
   echo retrieving list of nodes . . .
@@ -320,9 +337,14 @@ list-masters()
   local counter=1
   for master in "${masters[@]}"; do
     if [ "$(master-running $master)" ] ; then
-      echo master $counter $master started
+      echo -n master $counter $master started
     else
-      echo master $counter $master stopped
+      echo -n master $counter $master stopped
+    fi
+    if [ "$(master-leader $master)" ] ; then
+      echo " leader "
+    else
+      echo
     fi
     counter=$[$counter +1]
   done
@@ -500,6 +522,38 @@ if [ "$AGENTSDOCKERPULL" = true ] ; then
   exit 0
 fi
 
+agents-docker-ps()
+{
+  echo "retrieve docker processes on all agents"
+
+  echo retrieving list of nodes . . .
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+  echo found ${#nodes[@]} nodes
+
+  echo discovering agents . . .
+  local agentsString="$(getagents "${nodes[@]}")"
+  local -a agents=()
+  eval "declare -a agents=${agentsString}"
+  echo found ${#agents[@]} agents
+
+  local hostString=""
+  for agent in "${agents[@]}"; do
+    hostString="$hostString -H $AZUREUSER@$agent"
+  done
+  if [ "$hostString" = "" ] ; then
+    echo "there are no agents to $action"
+    return 0
+  fi
+
+  pssh -t 0 -i $hostString "sudo docker ps"
+}
+if [ "$AGENTSDOCKERPS" = true ] ; then
+  agents-docker-ps 
+  exit 0
+fi
+
 scale-up()
 {
   declare scaleUpCount=("$1")
@@ -646,13 +700,27 @@ create-marathon-app()
     return 1
   fi
 
-  local marathonMaster="http://${masters[0]}:8080"
-  echo submiting to $marathonMaster
+  #find the master hosting the leading marathon framework
+  marathonEndpoint=""
+  for master in "${masters[@]}"; do
+    result=$(wget -O- http://${master}:5050/master/state-summary 2> /dev/null | jq -r '.frameworks[] | select(.name == "marathon").webui_url')
+    
+    if [ "$result" ] ; then
+      marathonEndpoint=$result
+      break
+    fi
+  done
+
+  if ! [ "$marathonEndpoint" ] ; then
+    echo "ERROR: could not find a marathon endpoint"
+    return 1
+  fi
+  echo found $marathonEndpoint as marathon leader endpoint
 
   for jsonFile in "${marathonfiles[@]}"; do
     if [ -e $jsonFile ] ; then
-      echo curl -X POST $marathonMaster/v2/groups -d @$jsonFile -H "Content-type: application/json"
-      curl -X POST $marathonMaster/v2/groups -d @$jsonFile -H "Content-type: application/json"
+      echo curl -X POST $marathonEndpoint/v2/groups -d @$jsonFile -H "Content-type: application/json"
+      curl -X POST $marathonEndpoint/v2/groups -d @$jsonFile -H "Content-type: application/json"
     else
       echo ERROR: file $jsonFile does not exist, unable to submit
     fi
