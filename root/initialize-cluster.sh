@@ -8,4 +8,5 @@ container-service --list-masters
 container-service --start-agents
 container-service --scale-down 10
 container-service --docker-pull-agents azuredemo/web:azurecon --docker-pull-agents azuredemo/rest:azurecon
+container-service --delete-marathon-app azure
 wget https://raw.githubusercontent.com/rgardler/AzureDevTestDeploy/azurecon/marathon.json
