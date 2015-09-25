@@ -44,6 +44,8 @@ Docker Management
 Marathon Management
   --create-marathon-app FILE  submit the marathon app where FILE is the .json
                               file describing the app
+  --delete-marathon-app ID    delete the marathon app where ID is the name
+                              of the Marathon app
 
 Other
   --help                      show this output
@@ -55,7 +57,7 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-ARGS=$(getopt -s bash -o h --longoptions help,cache-fingerprints,list-agents,list-masters,refresh-cluster,start-agents,stop-agents,restart-agents,start-agent:,stop-agent:,restart-agent:,exclude-agent:,scale-up:,scale-down:,docker-ps-agents,docker-pull-agents:,docker-pull-batchsize:,docker-restart-agents,docker-restart-agent:,create-marathon-app: --name $PROGNAME -- "$@")
+ARGS=$(getopt -s bash -o h --longoptions help,cache-fingerprints,list-agents,list-masters,refresh-cluster,start-agents,stop-agents,restart-agents,start-agent:,stop-agent:,restart-agent:,exclude-agent:,scale-up:,scale-down:,docker-ps-agents,docker-pull-agents:,docker-pull-batchsize:,docker-restart-agents,docker-restart-agent:,create-marathon-app:,delete-marathon-app: --name $PROGNAME -- "$@")
 
 if [ $? -ne 0 ] ; then
   usage
@@ -92,6 +94,8 @@ DOCKERRESTARTAGENT=false
 DOCKERRESTARTAGENTARGS=()
 CREATEMARATHONAPP=false
 CREATEMARATHONAPPARGS=()
+DELETEMARATHONAPP=false
+DELETEMARATHONAPPARGS=()
 
 while true; do
   case $1 in
@@ -231,6 +235,12 @@ while true; do
     --create-marathon-app)
       CREATEMARATHONAPP=true
       CREATEMARATHONAPPARGS=("${CREATEMARATHONAPPARGS[@]}" "$2")
+      shift 2
+      ;;
+
+    --delete-marathon-app)
+      DELETEMARATHONAPP=true
+      DELETEMARATHONAPPARGS=("${DELETEMARATHONAPPARGS[@]}" "$2")
       shift 2
       ;;
 
@@ -863,5 +873,50 @@ create-marathon-app()
 }
 if [ "$CREATEMARATHONAPP" = true ] ; then
   create-marathon-app CREATEMARATHONAPPARGS[@]
+  exit 0
+fi
+
+delete-marathon-app()
+{
+  declare -a marathonids=("${!1}")
+  echo "submitting the following marathon apps ${marathonids[@]}"
+
+  local nodesString="$(getnodes)"
+  local -a nodes=()
+  eval "declare -a nodes=${nodesString}"
+
+  local mastersstring="$(getmasters "${nodes[@]}")"
+  local -a masters=()
+  eval "declare -a masters=${mastersstring}"
+
+  if [ "${#masters[@]}" -eq "0" ] ; then
+    echo there are no masters, exiting . . .
+    return 1
+  fi
+
+  #find the master hosting the leading marathon framework
+  marathonEndpoint=""
+  for master in "${masters[@]}"; do
+    result=$(wget -O- http://${master}:5050/master/state-summary 2> /dev/null | jq -r '.frameworks[] | select(.name == "marathon").webui_url')
+
+    if [ "$result" ] ; then
+      marathonEndpoint=$result
+      break
+    fi
+  done
+
+  if ! [ "$marathonEndpoint" ] ; then
+    echo "ERROR: could not find a marathon endpoint"
+    return 1
+  fi
+  echo found $marathonEndpoint as marathon leader endpoint
+
+  for marathonid in "${marathonids[@]}"; do
+    echo curl -X DELETE $marathonEndpoint/v2/groups/$marathonid
+    curl -X DELETE $marathonEndpoint/v2/groups/$marathonid
+  done
+}
+if [ "$DELETEMARATHONAPP" = true ] ; then
+  delete-marathon-app DELETEMARATHONAPPARGS[@]
   exit 0
 fi
