@@ -101,72 +101,72 @@ while true; do
       ;;
 
     --cache-fingerprints)
-  	  shift
-  	  CACHEFINGERPRINTS=true
-  	  ;;
+      shift
+      CACHEFINGERPRINTS=true
+      ;;
 
     --list-agents)
-  	  shift
-  	  LISTAGENTS=true
-  	  ;;
+      shift
+      LISTAGENTS=true
+      ;;
 
     --list-masters)
-  	  shift
-  	  LISTMASTERS=true
-  	  ;;
+      shift
+      LISTMASTERS=true
+      ;;
 
     --refresh-cluster)
-  	  shift
-  	  REFRESHCLUSTER=true
-  	  ;;
+      shift
+      REFRESHCLUSTER=true
+      ;;
 
     --start-agents)
-  	  shift
-  	  STARTAGENTS=true
-  	  ;;
+      shift
+      STARTAGENTS=true
+      ;;
 
     --stop-agents)
-  	  shift
-  	  STOPAGENTS=true
-  	  ;;
+      shift
+      STOPAGENTS=true
+      ;;
 
     --restart-agents)
-  	  shift
-  	  RESTARTAGENTS=true
-  	  ;;
+      shift
+      RESTARTAGENTS=true
+      ;;
 
     --start-agent)
-  	  STARTAGENT=true
+      STARTAGENT=true
       if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
         echo "ERROR: agent must be an integer"
         usage
         exit 1
       fi
-  	  STARTAGENTARGS=("${STARTAGENTARGS[@]}" "$2")
-  	  shift 2
-  	  ;;
+      STARTAGENTARGS=("${STARTAGENTARGS[@]}" "$2")
+      shift 2
+      ;;
 
     --stop-agent)
-  	  STOPAGENT=true
+      STOPAGENT=true
       if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
         echo "ERROR: agent must be an integer"
         usage
         exit 1
       fi
-  	  STOPAGENTARGS=("${STOPAGENTARGS[@]}" "$2")
-  	  shift 2
-  	  ;;
+      STOPAGENTARGS=("${STOPAGENTARGS[@]}" "$2")
+      shift 2
+      ;;
 
     --restart-agent)
-	    RESTARTAGENT=true
+      RESTARTAGENT=true
       if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
         echo "ERROR: agent must be an integer"
         usage
         exit 1
       fi
-  	  RESTARTAGENTARGS=("${RESTARTAGENTARGS[@]}" "$2")
-  	  shift 2
-	    ;;
+      RESTARTAGENTARGS=("${RESTARTAGENTARGS[@]}" "$2")
+      shift 2
+      ;;
 
     --exclude-agent)
       EXCLUDEAGENT=true
@@ -175,9 +175,9 @@ while true; do
         usage
         exit 1
       fi
-  	  EXCLUDEAGENTARGS=("${EXCLUDEAGENTARGS[@]}" "$2")
-  	  shift 2
-  	  ;;
+      EXCLUDEAGENTARGS=("${EXCLUDEAGENTARGS[@]}" "$2")
+      shift 2
+      ;;
 
     --scale-up)
       SCALEUP=true
@@ -193,14 +193,14 @@ while true; do
 
     --docker-ps-agents)
       shift
-  	  DOCKERPSAGENTS=true
-  	  ;;
+      DOCKERPSAGENTS=true
+      ;;
 
     --docker-pull-agents)
-  	  DOCKERPULLAGENTS=true
-  	  DOCKERPULLAGENTSARGS=("${DOCKERPULLAGENTSARGS[@]}" "$2")
-  	  shift 2
-  	  ;;
+      DOCKERPULLAGENTS=true
+      DOCKERPULLAGENTSARGS=("${DOCKERPULLAGENTSARGS[@]}" "$2")
+      shift 2
+      ;;
 
     --docker-pull-batchsize)
       if ! [ "$2" -eq "$2" ] 2>/dev/null || [ "$2" -le "0" ] ; then
@@ -218,31 +218,31 @@ while true; do
       ;;
 
     --docker-restart-agent)
-	    DOCKERRESTARTAGENT=true
+      DOCKERRESTARTAGENT=true
       if ! [ "$2" -eq "$2" ] 2>/dev/null ; then
         echo "ERROR: agent must be an integer"
         usage
         exit 1
       fi
-  	  DOCKERRESTARTAGENTARGS=("${DOCKERRESTARTAGENTARGS[@]}" "$2")
-  	  shift 2
-	    ;;
+      DOCKERRESTARTAGENTARGS=("${DOCKERRESTARTAGENTARGS[@]}" "$2")
+      shift 2
+      ;;
 
     --create-marathon-app)
-  	  CREATEMARATHONAPP=true
-  	  CREATEMARATHONAPPARGS=("${CREATEMARATHONAPPARGS[@]}" "$2")
-  	  shift 2
-  	  ;;
+      CREATEMARATHONAPP=true
+      CREATEMARATHONAPPARGS=("${CREATEMARATHONAPPARGS[@]}" "$2")
+      shift 2
+      ;;
 
-  	--)
-  	  shift
-  	  break
-  	  ;;
+    --)
+      shift
+      break
+      ;;
 
-  	*)
-  	  echo "ERROR: invalid argument or missing parameter for $1"
-  	  usage
-  	  exit 1
+    *)
+      echo "ERROR: invalid argument or missing parameter for $1"
+      usage
+      exit 1
   esac
 done
 
@@ -517,7 +517,6 @@ service-agent()
     fi
   done
 
-  local hostString=""
   local counter=1
   for agent in "${agents[@]}"; do
     if [ "${excludeArray[$counter]}" = false ] ; then
@@ -526,20 +525,19 @@ service-agent()
       elif [ "$action" = "stop" ] && ! [ "$(agent-running $agent)" ] ; then
         echo agent $agent is already stopped
       else
-        hostString="$hostString -H $AZUREUSER@$agent"
-        echo "including agent $counter $agent"
+        if [ "$action" = "stop" ] ; then
+          agentPid=$(ssh ${AZUREUSER}@${agent} sudo ps ax | grep slave | grep sbin | awk '{ print $1 }')
+          if [ "$agentPid" ] ; then
+            # send SIGUSR1 before stoping the service
+            echo ssh ${AZUREUSER}@${agent} sudo kill -SIGUSR1 $agentPid
+            ssh ${AZUREUSER}@${agent} sudo kill -SIGUSR1 $agentPid
+          fi
+        fi
+        ssh ${AZUREUSER}@${agent} sudo service mesos-slave $action < /dev/null
       fi
     fi
     counter=$[$counter +1]
   done
-  if [ "$hostString" = "" ] ; then
-    echo "there are no agents to $action"
-    return 0
-  fi
-
-  echo calling ${action} on agents in parallel
-
-  pssh -i $hostString "sudo service mesos-slave $action"
 }
 if [ "$STOPAGENT" = true ] ; then
   service-agent STOPAGENTARGS[@] "stop"
